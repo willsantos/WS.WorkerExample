@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
+using Prometheus.Client.DependencyInjection;
 using WS.WorkerExample.Application.Interfaces;
 using WS.WorkerExample.Application.Services;
 using WS.WorkerExample.Data;
@@ -18,14 +20,20 @@ namespace WS.WorkerExample
             builder.Services
                 .AddHostedService<Worker>()
                 .AddSingleton<IHttpService, HttpService>()
+                .AddSingleton<IMetricFactory>(Metrics.DefaultFactory)
                 .AddScoped<IWorkerService, WorkerService>();
+
+            var connectionString = builder.Configuration.GetConnectionString("default");
 
             builder.Services.AddDbContext<AppDbContext>(options =>
             {
-                options.UseSqlServer("Server=localhost,1433;Database=Worker-dev;User ID=sa;Password=1q2w3e4r@#$;Trusted_Connection=False; TrustServerCertificate=True;");
+                options.UseSqlServer(connectionString);
             });
-
+            
             var host = builder.Build();
+
+            var metricServer = new KestrelMetricServer(port:8080);
+            metricServer.Start();
             host.Run();
         }
     }

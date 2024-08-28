@@ -1,4 +1,7 @@
 using System.Data.Common;
+using System.Diagnostics;
+using Microsoft.EntityFrameworkCore;
+using Prometheus;
 using WS.WorkerExample.Application.Interfaces;
 using WS.WorkerExample.Data;
 using WS.WorkerExample.Data.Entities;
@@ -11,19 +14,49 @@ namespace WS.WorkerExample
         private readonly IHttpService _httpService;
         private readonly IHostApplicationLifetime _applicationLifetime;
         private readonly IServiceProvider _serviceProvider;
+        private readonly IMetricFactory _metrics;
+        private readonly IHistogram _jobDuration;
+        private static readonly Counter LogCounter = Metrics.CreateCounter("log_events_total", "Total number of log events.", labelNames: new[] { "level", "event" });
 
-        public Worker(ILogger<Worker> logger, IHttpService httpService, IHostApplicationLifetime applicationLifetime, IServiceProvider serviceProvider)
+        public Worker(ILogger<Worker> logger,IMetricFactory metrics, IHttpService httpService, IHostApplicationLifetime applicationLifetime, IServiceProvider serviceProvider)
         {
             _logger = logger;
+            _metrics = metrics;
             _httpService = httpService;
             _applicationLifetime = applicationLifetime;
             _serviceProvider = serviceProvider;
+            
+            
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
             using var scope = _serviceProvider.CreateScope();
+            
+            var _metricFactory = scope.ServiceProvider.GetRequiredService<IMetricFactory>();
+            var _jobDuration = _metricFactory.CreateHistogram("job_duration_seconds", "Duration of job execution in seconds");
+            _logger.LogInformation("worker executing db migrations {time}",DateTimeOffset.Now);
+            LogCounter.Labels("info", "migration_completed").Inc();
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                ApplyMigrations();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Falha ao realizar as migrations no banco {Ex}",ex);
+                LogCounter.Labels("Error", "task_Failed").Inc();
+            }
+            finally
+            {
+                stopwatch.Stop();
+                _jobDuration.Observe(stopwatch.Elapsed.TotalSeconds);
+            }
+
+            
+            _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
+            
 
             var _workerService = scope.ServiceProvider.GetRequiredService<IWorkerService>();
 
@@ -54,7 +87,8 @@ namespace WS.WorkerExample
                         {
                             if (await _workerService.GetFuncionarioByName(funcionario.Nome, stoppingToken) is not null)
                             {
-                                _logger.LogWarning("Pokemon: {name} j� cadastrado como funcionario!", pokemon.Name);
+                                _logger.LogWarning("Pokemon: {name} já cadastrado como funcionario!", pokemon.Name);
+                                LogCounter.Labels("info", "funcionario_task").Inc();
                             }
                             else
                             {
@@ -82,6 +116,15 @@ namespace WS.WorkerExample
                     await Task.Delay(50000, stoppingToken);
                 }
             }
+        }
+        
+        private void ApplyMigrations()
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            // Aplica todas as migrações pendentes
+            dbContext.Database.Migrate();
         }
     }
 }
